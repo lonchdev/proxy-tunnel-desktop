@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType><TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF><UseWindowsForms>true</UseWindowsForms><ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>enable</Nullable><AssemblyName>ProxyTunnel-Prototype</AssemblyName>
+    <ProxyTunnelToolsRoot Condition="'$(ProxyTunnelToolsRoot)' == ''">../tools</ProxyTunnelToolsRoot>
+    <Version>0.1.9</Version><ApplicationManifest>app.manifest</ApplicationManifest>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting><StartupObject>ProxyTunnelPrototype.Entry</StartupObject>
+    <NuGetAudit>true</NuGetAudit>
+    <NoWarn>$(NoWarn);WFAC010</NoWarn>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="SSH.NET" Version="2026.0.0" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+    <EmbeddedResource Include="$(ProxyTunnelToolsRoot)/singbox/sing-box-1.14.4-windows-amd64/sing-box.exe" LogicalName="engine.exe" />
+    <EmbeddedResource Include="$(ProxyTunnelToolsRoot)/singbox-linux.tar.gz" LogicalName="server.tar.gz" />
+    <EmbeddedResource Include="server-install.sh" LogicalName="server-install.sh" />
+    <EmbeddedResource Include="app.ico" LogicalName="app.ico" />
+  </ItemGroup>
+</Project>
+
+
+
+

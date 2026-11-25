@@ -1,0 +1,46 @@
+# Build output and downloaded dependencies
+**/bin/
+**/obj/
+**/publish/
+**/tools/
+.vs/
+.idea/
+*.user
+*.suo
+*.exe
+*.dll
+*.pdb
+*.zip
+*.tar.gz
+
+# Local configuration, credentials and runtime history
+.env
+.env.*
+!.env.example
+settings.json
+config.json
+known_hosts.json
+*lease*.json*
+active.json
+diagnostic-client.json
+*.pem
+*.pfx
+*.p12
+*.key
+id_rsa*
+id_ed25519*
+admin_rsa*
+tunnel_rsa*
+*.log
+*.jsonl
+incidents/
+test-*/
+preview*/
+*-test.txt
+*signing*private*
+
+# Editors and OS
+.DS_Store
+Thumbs.db
+__pycache__/
+*.pyc
