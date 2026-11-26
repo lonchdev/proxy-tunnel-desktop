@@ -46,6 +46,20 @@ static class ReportTests
             }
             for(int i=1;i<=22;i++) store.Begin(item.Host,item.Port,"fault","",at.AddMinutes(10+i*6));
             Check(Directory.EnumerateDirectories(root).Count()<=20,"Local incident retention is bounded to twenty directories");
+            var queueRoot=Path.Combine(root,"queue"); var queue=new IncidentStore(queueRoot);
+            var first=queue.Begin("203.0.113.10",24443,"first","",at);
+            var second=queue.Begin("203.0.113.10",24443,"second","",at.AddMinutes(6));
+            Check(queue.PendingReport?.Id==first.Id&&queue.PendingCount==2,"Unsaved report remains visible while a later incident waits in the queue");
+            var writeFailed=false; try { queue.ExportAndAcknowledge(first.Id,Path.Combine(root,"missing","bad.zip")); } catch(IOException) { writeFailed=true; }
+            Check(writeFailed&&queue.PendingReport?.Id==first.Id,"A failed archive write does not dismiss the incident banner");
+            queue.ExportAndAcknowledge(first.Id,Path.Combine(root,"first-saved.zip"));
+            Check(queue.PendingReport?.Id==second.Id&&queue.PendingCount==1,"Successful save acknowledges only the selected incident and exposes the next one");
+            queue.ExportAndAcknowledge(second.Id,Path.Combine(root,"second-saved.zip"));
+            Check(queue.PendingReport==null&&new IncidentStore(queueRoot).PendingReport==null,"Saved incident banners stay dismissed after application restart");
+            queue.Received(second,server);
+            Check(queue.PendingReport==null,"Late server diagnostic completion cannot resurrect a saved incident banner");
+            var fresh=queue.Begin("203.0.113.10",24443,"fresh","",at.AddMinutes(7));
+            Check(fresh.Id!=second.Id&&queue.PendingReport?.Id==fresh.Id,"A fresh error after save creates a new report even inside the previous collection window");
             var health=new TrafficHealth(); health.Failure(TimeSpan.Zero); health.Failure(TimeSpan.FromSeconds(1)); health.Failure(TimeSpan.FromSeconds(2));
             Check(health.Recent(TimeSpan.FromSeconds(3))==3&&health.Recent(TimeSpan.FromSeconds(100))==0,"Recent transport failures expire so a later healthy check can clear partial-failure status");
             Check(TrafficHealth.IsVpsFailure("dial tcp 203.0.113.10:24443: i/o timeout",item.Host,item.Port)&&!TrafficHealth.IsVpsFailure("dial tcp 192.168.1.3:7680: i/o timeout",item.Host,item.Port),"Only transport failures to the configured VPS count toward partial connectivity");

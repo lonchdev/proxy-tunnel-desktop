@@ -12,6 +12,7 @@ public static class Entry
     public static int Main(string[] args)
     {
         if(args.Length==2&&args[0]=="--apply-update") return UpdateInstaller.Run(args[1]);
+        if(args.Contains("--desktop-test")) return DesktopTests.Run();
         if(args.Contains("--update-test")) return UpdateTests.Run();
         if(args.Contains("--disable-kill-switch"))
         {
@@ -50,10 +51,15 @@ public static class Entry
             var app=new Application();
             app.DispatcherUnhandledException+=(_,e)=> { MessageBox.Show(e.Exception.Message,"Proxy Tunnel"); e.Handled=true; };
             var window=new MainWindow(Settings.Load(),args.Contains("--render-preview"));
-            if(Updates.Pending&&!args.Contains("--render-preview")) window.ContentRendered+=async (_,_)=>await window.ResumeUpdate();
+            var startupHandled=false;
+            if(!args.Contains("--render-preview")) window.ContentRendered+=async (_,_)=> {
+                if(startupHandled) return; startupHandled=true;
+                if(Updates.Pending) await window.ResumeUpdate();
+                else if(DesktopBehavior.AutoConnect(window.ServerReady,args.Contains("--startup"),Autostart.Enabled)) await window.ConnectAtStartup();
+            };
             if(recoveryProblem!=null) window.ReportStartupProblem(recoveryProblem);
             if(args.Contains("--render-preview")) window.ContentRendered+=(_,_)=> {
-                window.RenderPages(args.Last()); window.Close();
+                window.RenderPages(args.Last()); window.DisposeForTest();
             };
             return app.Run(window);
         }

@@ -4,7 +4,7 @@
     <UseWPF>true</UseWPF><UseWindowsForms>true</UseWindowsForms><ImplicitUsings>disable</ImplicitUsings>
     <Nullable>enable</Nullable><AssemblyName>ProxyTunnel-Prototype</AssemblyName>
     <ProxyTunnelToolsRoot Condition="'$(ProxyTunnelToolsRoot)' == ''">../tools</ProxyTunnelToolsRoot>
-    <Version>0.1.10</Version><ApplicationManifest>app.manifest</ApplicationManifest>
+    <Version>0.1.11</Version><ApplicationManifest>app.manifest</ApplicationManifest>
     <EnableWindowsTargeting>true</EnableWindowsTargeting><StartupObject>ProxyTunnelPrototype.Entry</StartupObject>
     <NuGetAudit>true</NuGetAudit>
     <NoWarn>$(NoWarn);WFAC010</NoWarn>

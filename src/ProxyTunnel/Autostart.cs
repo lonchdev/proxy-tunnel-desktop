@@ -23,7 +23,7 @@ internal static class Autostart
         var user=WindowsIdentity.GetCurrent().User!.Value;
         task.Principal.UserId=user; task.Principal.LogonType=3; task.Principal.RunLevel=1;
         dynamic trigger=task.Triggers.Create(9); trigger.UserId=user;
-        dynamic action=task.Actions.Create(0); action.Path=Environment.ProcessPath!;
+        dynamic action=task.Actions.Create(0); action.Path=Environment.ProcessPath!; action.Arguments="--startup";
         action.WorkingDirectory=System.IO.Path.GetDirectoryName(Environment.ProcessPath!)!;
         task.Settings.DisallowStartIfOnBatteries=false; task.Settings.StopIfGoingOnBatteries=false;
         task.Settings.ExecutionTimeLimit="PT0S"; task.Settings.MultipleInstances=2;

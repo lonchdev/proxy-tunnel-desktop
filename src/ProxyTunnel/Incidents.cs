@@ -18,6 +18,7 @@ public sealed class Incident
     public DateTimeOffset NextAttempt { get; set; }
     public int Attempts { get; set; }
     public bool ServerReceived { get; set; }
+    public bool ReportSaved { get; set; }
     public bool BeforeReady { get; set; }
     public string CaptureWarning { get; set; }="";
     public DateTimeOffset From=>At.AddMinutes(-5);
@@ -49,14 +50,33 @@ public sealed class IncidentStore
     }
     void Save(Incident item)=>AtomicFile.Write(Path.Combine(Folder(item),"incident.json"),JsonSerializer.Serialize(item));
     public Incident? Latest { get { lock(sync) return items.OrderByDescending(i=>i.At).FirstOrDefault(); } }
+    public Incident? PendingReport { get { lock(sync) return items.Where(i=>!i.ReportSaved).OrderBy(i=>i.At).FirstOrDefault(); } }
+    public int PendingCount { get { lock(sync) return items.Count(i=>!i.ReportSaved); } }
+    public void ExportAndAcknowledge(string id,string destination)
+    {
+        Export(id,destination); // Archive streams must close successfully before acknowledgment.
+        lock(sync)
+        {
+            var item=items.FirstOrDefault(i=>i.Id==id); if(item==null) return;
+            item.ReportSaved=true;
+            try { Save(item); } catch { item.ReportSaved=false; throw; }
+            Prune();
+        }
+    }
     public Incident Begin(string host,int port,string reason,string context,DateTimeOffset at)=>Begin(host,port,reason,context,at,out _);
     internal Incident Begin(string host,int port,string reason,string context,DateTimeOffset at,out bool created)
     {
         lock(sync)
         {
             created=false;
-            var existing=items.LastOrDefault(i=>i.Host==host&&i.Port==port&&at>=i.At&&at<=i.Until);
+            var existing=items.LastOrDefault(i=>!i.ReportSaved&&i.Host==host&&i.Port==port&&at>=i.At&&at<=i.Until);
             if(existing!=null) return existing;
+            if(items.Count(i=>!i.ReportSaved)>=20)
+            {
+                var pending=items.Where(i=>!i.ReportSaved).OrderByDescending(i=>i.At).First();
+                pending.CaptureWarning="Очередь из 20 отчётов заполнена. Сохраните отчёты; новые события остаются в обычном журнале.";
+                TrySave(pending); return pending;
+            }
             var item=new Incident{Id=at.UtcDateTime.ToString("yyyyMMdd-HHmmss")+"-"+Guid.NewGuid().ToString("N")[..8],Host=host,Port=port,At=at,Reason=LogPrivacy.Clean(reason),Context=LogPrivacy.Clean(context),Version=typeof(Incident).Assembly.GetName().Version?.ToString()??"",NextAttempt=at.AddMinutes(5)};
             Directory.CreateDirectory(Folder(item)); Save(item); items.Add(item); created=true; Prune(); return item;
         }
@@ -125,7 +145,7 @@ public sealed class IncidentStore
         long Size()=>items.Sum(i=>Files.Sum(name=> { var path=Path.Combine(Folder(i),name); return File.Exists(path)?new FileInfo(path).Length:0; }));
         while(items.Count>1&&(items.Count>20||Size()>50L*1024*1024))
         {
-            var old=items.OrderBy(i=>i.At).First(); var dir=Folder(old);
+            var old=items.Where(i=>i.ReportSaved).OrderBy(i=>i.At).FirstOrDefault(); if(old==null) break; var dir=Folder(old);
             foreach(var name in Files) File.Delete(Path.Combine(dir,name));
             if(!Directory.EnumerateFileSystemEntries(dir).Any()) Directory.Delete(dir); items.Remove(old);
         }

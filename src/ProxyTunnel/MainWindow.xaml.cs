@@ -15,7 +15,8 @@ public partial class MainWindow : Window
     readonly Network network;
     readonly System.Windows.Forms.NotifyIcon tray;
     readonly DispatcherTimer clock;
-    bool loading=true, working, closing;
+    bool loading=true, working, closing, exitRequested;
+    readonly System.Windows.Forms.ToolStripMenuItem trayConnection;
     List<ServiceRule> draftRules=[];
     string selectionKey="";
     bool journalQueued;
@@ -43,13 +44,15 @@ public partial class MainWindow : Window
         using var iconStream=System.Reflection.Assembly.GetExecutingAssembly().GetManifestResourceStream("app.ico")!;
         tray=new System.Windows.Forms.NotifyIcon { Icon=new System.Drawing.Icon(iconStream),Text="Proxy Tunnel · выключен",Visible=!preview };
         var menu=new System.Windows.Forms.ContextMenuStrip();
-        menu.Items.Add("Открыть Proxy Tunnel",null,(_,_)=>Dispatcher.Invoke(Restore));
-        menu.Items.Add("Выключить туннель",null,async (_,_)=>await Action(()=>network.Disconnect()));
-        menu.Items.Add("Выход",null,(_,_)=>Dispatcher.Invoke(Close));
+        menu.Items.Add("Развернуть",null,(_,_)=>Dispatcher.Invoke(Restore));
+        trayConnection=new System.Windows.Forms.ToolStripMenuItem("Подключиться",null,(_,_)=>Dispatcher.Invoke(()=>ToggleConnection(this,new RoutedEventArgs())));
+        menu.Items.Add(trayConnection);
+        menu.Items.Add("Закрыть",null,(_,_)=>Dispatcher.Invoke(()=> { exitRequested=true; Close(); }));
         tray.ContextMenuStrip=menu; tray.DoubleClick+=(_,_)=>Dispatcher.Invoke(Restore);
         clock=new DispatcherTimer{Interval=TimeSpan.FromSeconds(1)}; clock.Tick+=(_,_)=> { Update(); if(DateTime.Now>=nextJournalRefresh) { nextJournalRefresh=DateTime.Now.AddMinutes(1); try { network.Journal.Maintain(); } catch(Exception ex) { network.ReportError(ex); } if(LogPage.Visibility==Visibility.Visible) RenderJournal(); } }; clock.Start();
         Closing+=OnClosing;
-        StateChanged+=(_,_)=> { if(WindowState==WindowState.Minimized) { Hide(); tray.Visible=true; } };
+        // Standard minimize stays on the taskbar; only the close button hides to tray.
+        StateChanged+=(_,_)=> { if(WindowState==WindowState.Minimized) ShowInTaskbar=true; };
         if(!settings.Ready) ShowNotice("Для первого подключения подготовьте VPS на странице «Сервер».");
         else if(network.ProtectionArmed) ShowNotice("После предыдущего сбоя сохранена блокировка прямого интернета. Подключитесь к VPS или нажмите «Отключить защиту».");
     }
@@ -100,9 +103,11 @@ public partial class MainWindow : Window
     void Update()
     {
         if(!IsInitialized) return;
-        var incident=network.Incidents?.Latest;
+        var incident=network.Incidents?.PendingReport;
+        IncidentPanel.Visibility=incident==null?Visibility.Collapsed:Visibility.Visible;
         SaveIncidentButton.IsEnabled=incident!=null;
-        IncidentStatus.Text=incident==null?"Зафиксированных сбоев пока нет.":$"Сбой {incident.Id} · {incident.At.LocalDateTime:dd.MM HH:mm} · "+(DateTimeOffset.UtcNow<incident.Until?"собираются записи после события":incident.ServerStatus);
+        if(trayConnection!=null) { trayConnection.Text=network.Connected||network.CanCancel?"Отключиться":"Подключиться"; trayConnection.Enabled=!working&&(!network.Busy||network.CanCancel); }
+        IncidentStatus.Text=incident==null?"Зафиксированных сбоев пока нет.":$"Сбой {incident.Id} · {incident.At.LocalDateTime:dd.MM HH:mm} · "+(DateTimeOffset.UtcNow<incident.Until?"собираются записи после события":incident.ServerStatus)+(network.Incidents!.PendingCount>1?$" · В очереди: {network.Incidents.PendingCount}":"");
         ConnectionTitle.Text=network.State; FooterStatus.Text=network.State;
         ServerSummary.Text=string.IsNullOrWhiteSpace(settings.Host)?"Сначала добавьте ваш сервер":settings.ServerLocation+"  /  "+settings.Host;
         var protectedNow=network.ProtectionArmed;
@@ -220,9 +225,9 @@ public partial class MainWindow : Window
     }
     void SaveIncident(object sender,RoutedEventArgs e)
     {
-        var incident=network.Incidents?.Latest; if(incident==null) return;
+        var incident=network.Incidents?.PendingReport; if(incident==null) return;
         var dialog=new SaveFileDialog{Title="Сохранить отчёт о сбое",FileName="ProxyTunnel-incident-"+incident.Id+".zip",Filter="Архив отчёта|*.zip"};
-        if(dialog.ShowDialog(this)==true) try { network.Incidents!.Export(incident.Id,dialog.FileName); } catch(Exception ex) { ShowNotice(ex.Message); }
+        if(dialog.ShowDialog(this)==true) try { network.Incidents!.ExportAndAcknowledge(incident.Id,dialog.FileName); Update(); } catch(Exception ex) { ShowNotice(ex.Message); }
     }
     void OpenCopyPeriod(object sender,RoutedEventArgs e)
     {
@@ -307,14 +312,21 @@ public partial class MainWindow : Window
         if(extras) OverviewServiceRows.Children.Add(new TextBlock{Text="+ Свои домены и приложения",Margin=new Thickness(0,12,0,0),Foreground=Brushes.DarkGreen});
         if(OverviewServiceRows.Children.Count==0) OverviewServiceRows.Children.Add(new TextBlock{Text="Сервисы пока не выбраны. Добавьте их в настройках.",TextWrapping=TextWrapping.Wrap});
     }
-    void Restore() { Show(); WindowState=WindowState.Normal; Activate(); }
+    void Restore() { ShowInTaskbar=true; Show(); WindowState=WindowState.Normal; Activate(); }
+    public bool ServerReady=>settings.Ready;
+    public Task ConnectAtStartup()=>Action(async()=> { if(settings.Ready&&!network.Connected) { network.Journal.Add("Автозагрузка: начинаем подключение к сохранённому серверу."); await network.Connect(); } });
+    internal bool TrayVisibleForTest=>tray.Visible;
+    internal string TrayConnectionForTest=>trayConnection.Text??"";
+    internal void RestoreForTest()=>Restore();
+    internal void DisposeForTest() { if(!TestContext.Enabled) throw new InvalidOperationException(); closing=true; clock.Stop(); network.Dispose(); tray.Visible=false; tray.Dispose(); Close(); }
     async void OnClosing(object? sender,System.ComponentModel.CancelEventArgs e)
     {
         if(closing) return;
         e.Cancel=true;
-        if((working || network.Busy)&&!network.CanCancel) { ShowNotice("Дождитесь завершения настройки сервера перед выходом."); Restore(); return; }
+        if(!exitRequested) { Hide(); ShowInTaskbar=false; tray.Visible=true; return; }
+        if((working || network.Busy)&&!network.CanCancel) { exitRequested=false; ShowNotice("Дождитесь завершения настройки сервера перед выходом."); Restore(); return; }
         closing=true; vpsLogOperation?.Cancel(); copyLogOperation?.Cancel(); clock.Stop();
-        try { if(!Updates.Pending) await network.Disconnect(); } catch(Exception ex) { closing=false; clock.Start(); network.ReportError(ex); ShowNotice("Выход не завершён: "+ex.Message); return; }
+        try { if(!Updates.Pending) await network.Disconnect(); } catch(Exception ex) { closing=false; exitRequested=false; clock.Start(); network.ReportError(ex); ShowNotice("Выход не завершён: "+ex.Message); return; }
         network.Dispose(); tray.Visible=false; tray.Dispose();
         _ = Dispatcher.BeginInvoke(Close);
     }
