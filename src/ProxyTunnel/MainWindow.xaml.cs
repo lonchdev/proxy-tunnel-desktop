@@ -19,6 +19,7 @@ public partial class MainWindow : Window
     List<ServiceRule> draftRules=[];
     string selectionKey="";
     bool journalQueued;
+    CancellationTokenSource? updateOperation;
     DateTime nextJournalRefresh;
     LogPeriod copyPeriod=LogPeriod.All;
     LogPeriod vpsPeriod=LogPeriod.Hour;
@@ -313,9 +314,70 @@ public partial class MainWindow : Window
         e.Cancel=true;
         if((working || network.Busy)&&!network.CanCancel) { ShowNotice("Дождитесь завершения настройки сервера перед выходом."); Restore(); return; }
         closing=true; vpsLogOperation?.Cancel(); copyLogOperation?.Cancel(); clock.Stop();
-        try { await network.Disconnect(); } catch(Exception ex) { closing=false; clock.Start(); network.ReportError(ex); ShowNotice("Выход не завершён: "+ex.Message); return; }
+        try { if(!Updates.Pending) await network.Disconnect(); } catch(Exception ex) { closing=false; clock.Start(); network.ReportError(ex); ShowNotice("Выход не завершён: "+ex.Message); return; }
         network.Dispose(); tray.Visible=false; tray.Dispose();
         _ = Dispatcher.BeginInvoke(Close);
+    }
+    async void CheckUpdate(object sender,RoutedEventArgs e)
+    {
+        if(working||network.Busy) return;
+        if(Updates.Pending) { await ResumeUpdate(); return; }
+        if(!network.Connected||!settings.AllTraffic||!settings.KillSwitch||!network.ProtectionArmed)
+        { ShowNotice("Для обновления подключите полный туннель с kill switch. Прямая загрузка не используется."); return; }
+        using var cancel=new CancellationTokenSource(); updateOperation=cancel; UpdateTransaction? staged=null;
+        working=true; UpdateButton.IsEnabled=false; CancelUpdateButton.Visibility=Visibility.Visible;
+        try
+        {
+            UpdateStatus.Text="Проверка подписанного выпуска через VPS…";
+            var offer=await Updates.Check(cancel.Token);
+            if(offer==null) { UpdateStatus.Text="Новой стабильной версии нет. Если это первый выпуск, он ещё не опубликован в Releases."; return; }
+            var notes=offer.Notes.Length>3000?offer.Notes[..3000]+"…":offer.Notes;
+            if(MessageBox.Show(this,"Доступна версия "+offer.Manifest.Version+".\n\n"+notes+"\n\nСкачать и установить? Во время замены файлов интернет будет заблокирован. После запуска туннель восстановится автоматически; при ошибке блокировка сохранится.","Обновление Proxy Tunnel",MessageBoxButton.YesNo,MessageBoxImage.Information)!=MessageBoxResult.Yes) { UpdateStatus.Text="Установка отменена."; return; }
+            var transaction=await Updates.Stage(offer,message=>Dispatcher.BeginInvoke(()=>UpdateStatus.Text=message),cancel.Token);
+            staged=transaction;
+            cancel.Token.ThrowIfCancellationRequested();
+            UpdateStatus.Text="Пакет проверен. Подготовка отдельного установщика…";
+            await Updates.LaunchHelper(transaction);
+            CancelUpdateButton.Visibility=Visibility.Collapsed;
+            await network.PauseForUpdate(transaction);
+            FinishUpdateHandoff();
+        }
+        catch(OperationCanceledException) { UpdateStatus.Text=cancel.IsCancellationRequested?"Проверка или загрузка отменена; установка не началась.":"Время ожидания истекло; установка не началась."; }
+        catch(Exception ex) { UpdateStatus.Text="Обновление не завершено: "+LogPrivacy.Clean(ex.GetBaseException().Message); network.ReportError(ex); RollbackUpdateButton.Visibility=Updates.Pending?Visibility.Visible:Visibility.Collapsed; }
+        finally { if(staged!=null&&!closing&&!Updates.Pending) try { File.WriteAllText(System.IO.Path.Combine(Updates.DirectoryFor(staged.Id),"abort"),"abort"); } catch { } updateOperation=null; working=false; UpdateButton.IsEnabled=true; CancelUpdateButton.Visibility=Visibility.Collapsed; }
+    }
+    void CancelUpdate(object sender,RoutedEventArgs e)=>updateOperation?.Cancel();
+    void FinishUpdateHandoff()
+    {
+        closing=true; clock.Stop(); vpsLogOperation?.Cancel(); copyLogOperation?.Cancel();
+        network.Dispose(); tray.Visible=false; tray.Dispose(); Close();
+    }
+    public async Task ResumeUpdate()
+    {
+        if(working) return;
+        working=true; UpdateButton.IsEnabled=false;
+        try
+        {
+            var transaction=Updates.Read();
+            Updates.ValidateRunning();
+            if(!string.Equals(System.IO.Path.GetFullPath(transaction.Target),System.IO.Path.GetFullPath(Environment.ProcessPath!),StringComparison.OrdinalIgnoreCase)) throw new IOException("Завершите обновление из исходной папки приложения.");
+            ShowNotice("Восстановление после обновления. Прямой интернет остаётся заблокированным.");
+            UpdateStatus.Text="Восстанавливаем туннель и проверяем выход через VPS…";
+            await network.Connect();
+            if(Updates.Pending) { UpdateStatus.Text="Туннель пока не подтверждён. Защита сохраняется; повторите подключение или верните прежнюю версию."; RollbackUpdateButton.Visibility=Visibility.Visible; }
+            else { UpdateStatus.Text="Обновление завершено. Туннель работает, kill switch активен."; RollbackUpdateButton.Visibility=Visibility.Collapsed; ShowNotice("Обновление завершено: выход через VPS подтверждён."); }
+        }
+        catch(Exception ex) { UpdateStatus.Text="Восстановление не завершено: "+LogPrivacy.Clean(ex.GetBaseException().Message); network.ReportError(ex); RollbackUpdateButton.Visibility=Visibility.Visible; }
+        finally { working=false; UpdateButton.IsEnabled=true; }
+    }
+    async void RollbackUpdate(object sender,RoutedEventArgs e)
+    {
+        if(working||network.Busy) return;
+        if(MessageBox.Show(this,"Вернуть резервную копию приложения? Интернет останется заблокированным до восстановления туннеля.","Откат обновления",MessageBoxButton.YesNo)!=MessageBoxResult.Yes) return;
+        working=true;
+        try { var transaction=Updates.PrepareRollback(); await Updates.LaunchHelper(transaction); await network.PauseForUpdate(transaction); FinishUpdateHandoff(); }
+        catch(Exception ex) { UpdateStatus.Text="Откат пока не начат: "+LogPrivacy.Clean(ex.GetBaseException().Message); }
+        finally { working=false; }
     }
     public void RenderPages(string directory)
     {

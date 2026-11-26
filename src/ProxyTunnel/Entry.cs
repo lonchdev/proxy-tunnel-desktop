@@ -11,9 +11,11 @@ public static class Entry
     [STAThread]
     public static int Main(string[] args)
     {
+        if(args.Length==2&&args[0]=="--apply-update") return UpdateInstaller.Run(args[1]);
+        if(args.Contains("--update-test")) return UpdateTests.Run();
         if(args.Contains("--disable-kill-switch"))
         {
-            try { KillSwitch.Disarm(); MessageBox.Show("Блокировка прямого интернета выключена.","Proxy Tunnel"); return 0; }
+            try { KillSwitch.Disarm(); Updates.CancelRecovery(); MessageBox.Show("Блокировка прямого интернета выключена.","Proxy Tunnel"); return 0; }
             catch(Exception ex) { MessageBox.Show(ex.Message,"Proxy Tunnel"); return 1; }
         }
         if(args.Contains("--proxy-watchdog")) return ProxyLease.Watch(args.Last());
@@ -48,6 +50,7 @@ public static class Entry
             var app=new Application();
             app.DispatcherUnhandledException+=(_,e)=> { MessageBox.Show(e.Exception.Message,"Proxy Tunnel"); e.Handled=true; };
             var window=new MainWindow(Settings.Load(),args.Contains("--render-preview"));
+            if(Updates.Pending&&!args.Contains("--render-preview")) window.ContentRendered+=async (_,_)=>await window.ResumeUpdate();
             if(recoveryProblem!=null) window.ReportStartupProblem(recoveryProblem);
             if(args.Contains("--render-preview")) window.ContentRendered+=(_,_)=> {
                 window.RenderPages(args.Last()); window.Close();

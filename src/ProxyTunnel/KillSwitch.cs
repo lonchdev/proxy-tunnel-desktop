@@ -17,6 +17,7 @@ public static class KillSwitch
     static readonly Guid Provider=new("687768cb-0fee-4ded-a815-a3850bcb1f62");
     static readonly Guid Sublayer=new("fbe69322-f399-4e27-91c0-8d667ee7992c");
     static readonly Guid V4=new("c38d57d1-05a7-4c33-904f-7fbceee60e82"), V6=new("4a72393b-319f-44bc-84c3-ba54dcb3b6b4");
+    static readonly Guid ReceiveV4=new("e1cd9fe7-f4b5-4273-96c0-592e487b8650"), ReceiveV6=new("a3b42c97-9f04-4672-b87e-cee9c483257f");
     static readonly Guid Local=new("d9ee00de-c1ef-4617-bfe3-ffd8f5a08957"), Remote=new("b235ae9a-1d64-49b8-a44c-5ff3d9095045"), Port=new("c35a604d-d22b-4e1a-91b4-68f674ee674b"), Protocol=new("3971ef2b-623e-4f9a-8cb1-6e79b806b9a7"), App=new("d78e1e87-8644-4ea5-9437-d809ecefc971");
     const uint NotFound=0x80320003, Exists=0x80320009;
     static bool nativeValidated;
@@ -55,7 +56,26 @@ public static class KillSwitch
     }
     public static void Arm(Settings settings,string enginePath)
     {
-        var rules=Plan(settings);
+        Apply(Plan(settings),enginePath);
+    }
+    public static List<GuardRule> UpdatePlan(Settings? recovery=null)
+    {
+        var rules=new List<GuardRule>{new("update block IPv4",false,0,Remote:"0.0.0.0/0"),new("update block IPv6",false,0,Remote:"::/0"),new("update loopback IPv4",true,14,Remote:"127.0.0.0/8"),new("update loopback IPv6",true,14,Remote:"::1/128")};
+        if(recovery!=null)
+        {
+            // Only the transport can leave the PC during recovery. No LAN,
+            // physical DNS, DHCP or broad routing-engine exemptions.
+            rules.Add(new("update VPS TCP",true,12,Remote:recovery.Host+"/32",Port:recovery.ServerPort,Protocol:6));
+            rules.Add(new("update VPS UDP",true,12,Remote:recovery.Host+"/32",Port:recovery.ServerPort,Protocol:17));
+            rules.Add(new("update TUN IPv4",true,15,Local:"172.29.97.1/32"));
+            rules.Add(new("update TUN IPv6",true,15,Local:"fdfe:dcba:9797::1/128"));
+        }
+        return rules;
+    }
+    internal static Guid[] UpdateLayers(bool ipv6)=>new[]{ipv6?V6:V4,ipv6?ReceiveV6:ReceiveV4};
+    public static void ArmUpdateBlock(Settings? recovery=null)=>Apply(UpdatePlan(recovery),"",true);
+    static void Apply(List<GuardRule> rules,string enginePath,bool update=false)
+    {
         if(Testing) { Directory.CreateDirectory(Settings.DataDir); File.WriteAllText(TestState,JsonSerializer.Serialize(rules)); return; }
         using var engine=new WfpEngine(); using var arena=new Arena();
         Check(NativeWfp.FwpmTransactionBegin0(engine.Handle,0));
@@ -81,6 +101,13 @@ public static class KillSwitch
                 var filter=new NativeWfp.Filter{Key=FilterKey(i),Display=new("Proxy Tunnel: "+rule.Name,rule.Name),Flags=1,Provider=providerPointer,Layer=ipv6?V6:V4,SubLayer=Sublayer,
                     Weight=new(){Type=1,U8=rule.Weight},Count=(uint)conditions.Count,Conditions=arena.Array(conditions),Action=new(){Type=rule.Permit?0x1002u:0x1001u}};
                 Check(NativeWfp.FwpmFilterAdd0(engine.Handle,ref filter,IntPtr.Zero,out _));
+                if(update)
+                {
+                    // Also reauthorize inbound-initiated flows: their replies
+                    // must not bypass a temporary outgoing-connect-only gate.
+                    filter.Key=FilterKey(i+64); filter.Layer=UpdateLayers(ipv6)[1];
+                    Check(NativeWfp.FwpmFilterAdd0(engine.Handle,ref filter,IntPtr.Zero,out _));
+                }
             }
             Check(NativeWfp.FwpmTransactionCommit0(engine.Handle));
         }

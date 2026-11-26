@@ -357,6 +357,7 @@ public sealed class Network : IDisposable
     async Task Start(CancellationToken token,bool reconnect=false)
     {
         token.ThrowIfCancellationRequested(); Settings.Validate();
+        if(Updates.Pending&&(!Settings.AllTraffic||!Settings.KillSwitch)) throw new TunnelSafetyException("Восстановление обновления требует полного режима с kill switch.");
         Phase=reconnect?NetworkPhase.Reconnecting:NetworkPhase.Connecting;
         if(!Settings.Ready) throw new Exception("Откройте «Сервер» и нажмите «Подготовить VPS».");
         await StopCore(); token.ThrowIfCancellationRequested();
@@ -370,8 +371,9 @@ public sealed class Network : IDisposable
         Write("Основное подключение: "+(physical??"автоматический выбор"));
         if(Settings.KillSwitch)
         {
+            if(Updates.Pending) KillSwitch.ArmUpdateBlock(Settings);
             Stage("Самопроверка защиты Windows"); await KillSwitch.ValidateNative(Settings,Write);
-            token.ThrowIfCancellationRequested(); await Task.Run(()=>KillSwitch.Arm(Settings,Engine),token);
+            token.ThrowIfCancellationRequested(); await Task.Run(()=> { if(Updates.Pending) KillSwitch.ArmUpdateBlock(Settings); else KillSwitch.Arm(Settings,Engine); },token);
             Write("Kill switch активен. Локальная сеть и транспорт VPS разрешены.");
         }
         RequireCurrentUplink(link,token);
@@ -389,6 +391,14 @@ public sealed class Network : IDisposable
         RequireCurrentUplink(link,token); Stage("Применение прокси браузеров");
         await Task.Run(ProxyLease.Apply,token); token.ThrowIfCancellationRequested();
         if(!ProxyLease.Owns()) throw new TunnelSafetyException("Прокси Windows не применён. Проверьте журнал восстановления настроек.");
+        if(Updates.Pending)
+        {
+            // Both exit probes and the Windows route check above succeeded.
+            // Returning to the normal full-mode guard is atomic in WFP.
+            if(!Settings.AllTraffic||!Settings.KillSwitch) throw new TunnelSafetyException("Для завершения обновления нужен полный режим с kill switch.");
+            KillSwitch.Arm(Settings,Engine); Updates.Complete();
+            Write("Обновление завершено: выход через VPS подтверждён, обычный kill switch активен.");
+        }
         Connected=true; ConnectedAt=DateTime.Now; ExitIp=trace.Ip; Latency=trace.Milliseconds;
         healthPolicy.Reset(); retry.Reset(); lossRecorded=false;
         nextHealth=Now+TimeSpan.FromSeconds(15);
@@ -590,6 +600,7 @@ public sealed class Network : IDisposable
     }
     public async Task Disconnect()
     {
+        if(Updates.Pending) throw new IOException("Восстановление после обновления не завершено. Защита сохраняется. Для намеренного отключения используйте аварийную команду.");
         RequestStop(); SetState(NetworkPhase.Stopping,"Отключение…"); await gate.WaitAsync();
         try { await StopCore(); await Task.Run(KillSwitch.Disarm); retry.Reset(); healthPolicy.Reset(); FlushDns(); SetState(NetworkPhase.Off,"Туннель выключен"); Write("Ручное отключение: защита снята, обычное подключение восстановлено."); }
         catch(Exception ex) { Critical("Не удалось завершить отключение: "+ex.Message,"disconnect-error"); throw; }
@@ -597,6 +608,7 @@ public sealed class Network : IDisposable
     }
     public async Task Reconfigure(Action change)
     {
+        if(Updates.Pending) throw new IOException("Сначала восстановите туннель после обновления; настройки защиты не меняются.");
         await gate.WaitAsync(); Busy=true; var resume=Connected||ProtectionArmed; var op=BeginOperation();
         try { await StopCore(); change(); Settings.Save(); if(!Settings.KillSwitch) await Task.Run(KillSwitch.Disarm); if(resume) { wanted=true; await Start(op.Token); } }
         catch(OperationCanceledException) when(op.IsCancellationRequested) { await StopCore(); if(wanted) { WaitingForNetwork("Подключение сети изменилось · ожидаем восстановления"); WakeMonitor(); } }
@@ -604,6 +616,21 @@ public sealed class Network : IDisposable
         finally { EndOperation(op); Busy=false; gate.Release(); Changed?.Invoke(); }
     }
     Task StopCore()=>Task.Run(StopEngine);
+    public async Task PauseForUpdate(UpdateTransaction transaction)
+    {
+        if((!Connected&&!transaction.Rollback)||!Settings.AllTraffic||!Settings.KillSwitch||!ProtectionArmed) throw new IOException("Обновление требует работающего полного туннеля и включённого kill switch.");
+        RequestStop(); await gate.WaitAsync();
+        try
+        {
+            Updates.Save(transaction);
+            try { await Task.Run(()=>KillSwitch.ArmUpdateBlock()); }
+            catch { Updates.CancelRecovery(); wanted=Connected; throw; }
+            transaction.Step="blocked";
+            try { Updates.Save(transaction); } catch { await StopCore(); throw; }
+            await StopCore(); SetState(NetworkPhase.Blocked,"Установка обновления · интернет заблокирован");
+        }
+        finally { gate.Release(); }
+    }
     void StopEngine()
     {
         try { ProxyLease.Release(); } catch(Exception ex) { Critical("Не удалось восстановить прокси Windows: "+ex.Message,"proxy-restore"); }

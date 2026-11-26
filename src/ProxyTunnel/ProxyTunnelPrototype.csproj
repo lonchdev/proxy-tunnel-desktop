@@ -4,7 +4,7 @@
     <UseWPF>true</UseWPF><UseWindowsForms>true</UseWindowsForms><ImplicitUsings>disable</ImplicitUsings>
     <Nullable>enable</Nullable><AssemblyName>ProxyTunnel-Prototype</AssemblyName>
     <ProxyTunnelToolsRoot Condition="'$(ProxyTunnelToolsRoot)' == ''">../tools</ProxyTunnelToolsRoot>
-    <Version>0.1.9</Version><ApplicationManifest>app.manifest</ApplicationManifest>
+    <Version>0.1.10</Version><ApplicationManifest>app.manifest</ApplicationManifest>
     <EnableWindowsTargeting>true</EnableWindowsTargeting><StartupObject>ProxyTunnelPrototype.Entry</StartupObject>
     <NuGetAudit>true</NuGetAudit>
     <NoWarn>$(NoWarn);WFAC010</NoWarn>
@@ -16,6 +16,7 @@
     <EmbeddedResource Include="$(ProxyTunnelToolsRoot)/singbox/sing-box-1.14.4-windows-amd64/sing-box.exe" LogicalName="engine.exe" />
     <EmbeddedResource Include="$(ProxyTunnelToolsRoot)/singbox-linux.tar.gz" LogicalName="server.tar.gz" />
     <EmbeddedResource Include="server-install.sh" LogicalName="server-install.sh" />
+    <EmbeddedResource Include="update-public-key.pem" LogicalName="update-public-key.pem" />
     <EmbeddedResource Include="app.ico" LogicalName="app.ico" />
   </ItemGroup>
 </Project>

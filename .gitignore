@@ -44,3 +44,7 @@ preview*/
 Thumbs.db
 __pycache__/
 *.pyc
+
+# Public verification key is intentionally tracked (never a private key).
+!src/ProxyTunnel/update-public-key.pem
+updates/
